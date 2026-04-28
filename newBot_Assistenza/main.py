@@ -554,7 +554,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return
     # Broadcasting System - werfrag
     if data.startswith("sendPost:"):
-        if (await update.effective_chat.get_member(update.effective_user.id)).ADMINISTRATOR:
+        if (await update.effective_chat.get_member(update.effective_user.id)).status in [ChatMember.ADMINISTRATOR, ChatMember.OWNER]:
             message_id = int(data.split(':', 1)[1])
 
             async with aiosqlite.connect(DB_URL) as db:
@@ -584,7 +584,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             await query.answer(text="❌ Errore : Solo gli amministratori possono fare questo comando.")
         return
     if data == "refusePost":
-        if (await update.effective_chat.get_member(update.effective_user.id)).ADMINISTRATOR:
+        if (await update.effective_chat.get_member(update.effective_user.id)).status in [ChatMember.ADMINISTRATOR, ChatMember.OWNER]:
 
             message = f"<b>Operazione annullata.</b>"
             await query.edit_message_reply_markup()
@@ -599,7 +599,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 # =======================
 async def onBroadcastUser(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id == ADMIN_GROUP_ID:
-        if (await update.effective_chat.get_member(update.effective_user.id)).ADMINISTRATOR:
+        if (await update.effective_chat.get_member(update.effective_user.id)).status in [ChatMember.ADMINISTRATOR, ChatMember.OWNER]:
             if len(context.args) > 1:
                 messageRaw = update.message.text_html.split(" ", 1)[1]
                 messageRaw = f"<b>📣 BROADCAST INTERNO</b>\n\n{messageRaw}"
