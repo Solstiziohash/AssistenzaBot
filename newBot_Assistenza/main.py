@@ -637,10 +637,6 @@ async def post_init(app: Application) -> None:
     log.info("Database inizializzato.")
 
 
-async def getChat(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    print(update.effective_chat.id)
-
-
 def main() -> None:
     app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
 
@@ -682,7 +678,6 @@ def main() -> None:
 
     app.add_handler(conv_handler)
     app.add_handler(CommandHandler("broadcast", onBroadcastUser))
-    app.add_handler(CommandHandler("debug", getChat))
 
     # ── Callback query (pulsanti inline — funziona in qualsiasi chat) ──────────
     app.add_handler(CallbackQueryHandler(callback_handler))
