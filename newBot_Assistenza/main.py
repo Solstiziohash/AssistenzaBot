@@ -1,16 +1,15 @@
 """
 Bot di Assistenza Telegram - traduzione da Rust (teloxide) a Python (python-telegram-bot v21)
 """
-
-import logging
 import asyncio
+import logging
 import os
 
 import aiosqlite
 from dotenv import load_dotenv
 from telegram import (
     Update, InlineKeyboardButton, InlineKeyboardMarkup,
-    InputFile, ChatMember,
+    InputFile, ChatMember, ReactionTypeEmoji,
 )
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, CallbackQueryHandler,
@@ -18,11 +17,6 @@ from telegram.ext import (
 )
 from telegram.constants import ParseMode
 import telegram.error
-
-# ─── CONFIGURAZIONE ───────────────────────────────────────────────────────────
-ADMIN_GROUP_ID = -1003513997729
-DB_URL         = "bot.db"
-CHANNEL_ID     = "@Solstiaaaaaaaaa"
 
 # ─── STATI FSM ────────────────────────────────────────────────────────────────
 START, ASKING_SUPPORT, IN_SESSION = range(3)
@@ -34,6 +28,9 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_GROUP_ID = int(os.getenv("ADMIN_GROUP_ID"))
+DB_URL = os.getenv("DB_URL")
+CHANNEL_ID = int(os.getenv("CHANNEL_ID"))
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -43,8 +40,9 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 async def init_db() -> None:
     async with aiosqlite.connect(DB_URL) as db:
         await db.executescript("""
-            CREATE TABLE IF NOT EXISTS banned_users (
-                user_id INTEGER PRIMARY KEY
+            CREATE TABLE IF NOT EXISTS users (
+                user_id INTEGER PRIMARY KEY,
+                is_banned BOOLEAN DEFAULT 0
             );
             CREATE TABLE IF NOT EXISTS tickets (
                 user_id    INTEGER PRIMARY KEY,
@@ -66,18 +64,43 @@ async def init_db() -> None:
         await db.commit()
 
 
+async def createUser(user_id: int):
+    async with aiosqlite.connect(DB_URL) as db:
+        await db.execute(
+            "INSERT INTO users (user_id) VALUES (?)", (user_id,)
+        )
+        await db.commit()
+
+
+async def checkUser(user_id: int) -> bool:
+    async with aiosqlite.connect(DB_URL) as db:
+        async with db.execute(
+                "SELECT user_id FROM users WHERE user_id = ?", (user_id,)
+        ) as cur:
+            return await cur.fetchone() is not None
+
+
+async def delUser(user_id: int) -> None:
+    async with aiosqlite.connect(DB_URL) as db:
+        await db.execute(
+            "DELETE FROM users WHERE user_id=?", (user_id,)
+        )
+        await db.commit()
+
+
 async def is_banned(user_id: int) -> bool:
     async with aiosqlite.connect(DB_URL) as db:
         async with db.execute(
-            "SELECT 1 FROM banned_users WHERE user_id = ?", (user_id,)
+                "SELECT is_banned FROM users WHERE user_id = ?", (user_id,)
         ) as cur:
-            return await cur.fetchone() is not None
+            result = await cur.fetchone()
+            return result is not None and result == 1
 
 
 async def ban_user(user_id: int) -> None:
     async with aiosqlite.connect(DB_URL) as db:
         await db.execute(
-            "INSERT OR IGNORE INTO banned_users (user_id) VALUES (?)", (user_id,)
+            "UPDATE users SET is_banned=1 WHERE user_id=?", (user_id,)
         )
         await db.commit()
 
@@ -85,7 +108,7 @@ async def ban_user(user_id: int) -> None:
 async def unban_user(user_id: int) -> None:
     async with aiosqlite.connect(DB_URL) as db:
         await db.execute(
-            "DELETE FROM banned_users WHERE user_id = ?", (user_id,)
+            "UPDATE users SET is_banned=0 WHERE user_id=?", (user_id,)
         )
         await db.commit()
 
@@ -94,7 +117,7 @@ async def get_ticket(user_id: int) -> dict | None:
     async with aiosqlite.connect(DB_URL) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
-            "SELECT thread_id, wait_msg_id FROM tickets WHERE user_id = ?", (user_id,)
+                "SELECT thread_id, wait_msg_id FROM tickets WHERE user_id = ?", (user_id,)
         ) as cur:
             row = await cur.fetchone()
             return dict(row) if row else None
@@ -104,7 +127,7 @@ async def get_ticket_by_thread(thread_id: int) -> dict | None:
     async with aiosqlite.connect(DB_URL) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
-            "SELECT user_id FROM tickets WHERE thread_id = ?", (thread_id,)
+                "SELECT user_id FROM tickets WHERE thread_id = ?", (thread_id,)
         ) as cur:
             row = await cur.fetchone()
             return dict(row) if row else None
@@ -123,9 +146,9 @@ async def get_msg_map(src_chat: int, src_msg: int) -> dict | None:
     async with aiosqlite.connect(DB_URL) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
-            "SELECT dest_chat_id, dest_msg_id FROM msg_map "
-            "WHERE source_chat_id = ? AND source_msg_id = ?",
-            (src_chat, src_msg),
+                "SELECT dest_chat_id, dest_msg_id FROM msg_map "
+                "WHERE source_chat_id = ? AND source_msg_id = ?",
+                (src_chat, src_msg),
         ) as cur:
             row = await cur.fetchone()
             return dict(row) if row else None
@@ -134,7 +157,7 @@ async def get_msg_map(src_chat: int, src_msg: int) -> dict | None:
 async def get_system_msg(user_id: int) -> int | None:
     async with aiosqlite.connect(DB_URL) as db:
         async with db.execute(
-            "SELECT msg_id FROM user_system_msgs WHERE user_id = ?", (user_id,)
+                "SELECT msg_id FROM user_system_msgs WHERE user_id = ?", (user_id,)
         ) as cur:
             row = await cur.fetchone()
             return row[0] if row else None
@@ -172,7 +195,7 @@ async def check_subscription(context: ContextTypes.DEFAULT_TYPE, user_id: int) -
 
 
 async def send_subscription_barrier(context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> None:
-    channel_link = f"https://t.me/{CHANNEL_ID.replace('@', '')}"
+    channel_link = f"{(await context.bot.getChat(CHANNEL_ID)).invite_link}"
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("✅ Iscriviti", url=channel_link)],
         [InlineKeyboardButton("🔄 Ho effettuato l'iscrizione", callback_data="check_sub")],
@@ -186,15 +209,23 @@ async def send_subscription_barrier(context: ContextTypes.DEFAULT_TYPE, chat_id:
 
 
 async def send_welcome_menu(context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> None:
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("Assistenza 🛠️", callback_data="assistenza")]
-    ])
+    ticket = await get_ticket(chat_id)
+    if not ticket:
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("Assistenza 🛠️", callback_data="assistenza")]
+        ])
+        messCustom = "<i>Richiedi assistenza cliccando il seguente pulsante.</i>"
+    else:
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🚫 Sei già in sessione.", callback_data="nothing", style="primary")]
+        ])
+        messCustom = "<i>Per ricevere supporto, scrivi in chat il tuo problema!</i>"
     await context.bot.send_photo(
         chat_id,
-        photo=InputFile("logo.jpeg"),
+        photo=InputFile("logo.jpg"),
         caption=(
-            "🦅 <b>Benvenuto nel Bot di Pactum Patriae!</b>\n"
-            "<i>Richiedi assistenza col pulsante.</i>"
+            f"🦅 <b>Benvenuto nel Bot di Pactum Patriae!</b>\n"
+            f"{messCustom}"
         ),
         parse_mode=ParseMode.HTML,
         reply_markup=keyboard,
@@ -209,6 +240,9 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     """Gestisce /start con logica FSM per il messaggio di sistema pendente."""
     user = update.effective_user
     chat_id = update.effective_chat.id
+
+    if not await checkUser(user.id):
+        await createUser(user.id)
 
     if await is_banned(user.id):
         return ConversationHandler.END
@@ -252,14 +286,18 @@ async def generic_user_message_handler(update: Update, context: ContextTypes.DEF
     if await is_banned(user.id):
         return ConversationHandler.END
 
+    if not await check_subscription(context, user.id):
+        await send_subscription_barrier(context, chat_id)
+        return ConversationHandler.END
+
     ticket = await get_ticket(user.id)
     if ticket:
         await forward_to_admin(update, context)
         return IN_SESSION
 
-    if not await check_subscription(context, user.id):
-        await send_subscription_barrier(context, chat_id)
-        return ConversationHandler.END
+    if context.user_data["state"] == ASKING_SUPPORT:
+        await create_ticket_handler(update, context)
+        return IN_SESSION
 
     await send_welcome_menu(context, chat_id)
     return START
@@ -289,7 +327,7 @@ async def create_ticket_handler(update: Update, context: ContextTypes.DEFAULT_TY
     topic = await context.bot.create_forum_topic(
         ADMIN_GROUP_ID,
         f"Assistenza: {user.first_name}",
-        icon_color=0x6FB9F0,   # colore blu (opzionale)
+        icon_color=0x6FB9F0,  # colore blu (opzionale)
     )
     thread_id = topic.message_thread_id
 
@@ -355,6 +393,9 @@ async def forward_to_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         ADMIN_GROUP_ID,
         copied.message_id,
     )
+    await update.message.set_reaction(reaction=[ReactionTypeEmoji('👍')])
+    await asyncio.sleep(2)
+    await update.message.set_reaction()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -375,7 +416,7 @@ async def admin_reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     uid = ticket["user_id"]
 
     # Comando /del: cancella un messaggio specchiato
-    if msg.text == "/del" and msg.reply_to_message:
+    if msg.text in ["/del", ".del", "/delete", ".delete"] and msg.reply_to_message:
         reply = msg.reply_to_message
         m = await get_msg_map(msg.chat.id, reply.message_id)
         if m:
@@ -396,6 +437,9 @@ async def admin_reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     # Inoltro normale admin → utente
     copied = await context.bot.copy_message(uid, msg.chat.id, msg.message_id)
     await save_msg_map(msg.chat.id, msg.message_id, uid, copied.message_id)
+    await update.message.set_reaction(reaction=[ReactionTypeEmoji('👍')])
+    await asyncio.sleep(2)
+    await update.message.set_reaction()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -412,7 +456,7 @@ async def edit_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         return
 
     dst_chat = mapping["dest_chat_id"]
-    dst_msg  = mapping["dest_msg_id"]
+    dst_msg = mapping["dest_msg_id"]
 
     try:
         if msg.text:
@@ -432,7 +476,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     await query.answer()
 
     user_id = query.from_user.id
-    data    = query.data
+    data = query.data
 
     # ── check_sub ──────────────────────────────────────────────────────────────
     if data == "check_sub":
@@ -508,6 +552,80 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         except telegram.error.TelegramError:
             pass
         return
+    # Broadcasting System - werfrag
+    if data.startswith("sendPost:"):
+        if (await update.effective_chat.get_member(update.effective_user.id)).ADMINISTRATOR:
+            message_id = int(data.split(':', 1)[1])
+
+            async with aiosqlite.connect(DB_URL) as db:
+                async with db.execute(
+                        "SELECT user_id FROM users",
+                ) as cur:
+                    row = await cur.fetchall()
+
+            success = 0
+            danger = 0
+            for idx in row:
+                try:
+                    success += 1
+                    await context.bot.copy_message(message_id=message_id, from_chat_id=update.effective_chat.id, chat_id=idx[0])
+                except telegram.error.TelegramError:
+                    danger += 1
+                    if not (await is_banned(idx[0])):
+                        await delUser(idx[0])
+
+            await query.edit_message_reply_markup()
+            message = (f"<b>Messaggio inviato correttamente.</b>\n\n"
+                       f"<b>🤓 Nerd Statistic</b>\n\n"
+                       f"<i>✅ Success:</i> <code>{success}</code>\n"
+                       f"<i>❌ Error (Bot Blocked):</i> <code>{danger}</code>")
+            await query.edit_message_text(message, parse_mode='HTML')
+        else:
+            await query.answer(text="❌ Errore : Solo gli amministratori possono fare questo comando.")
+        return
+    if data == "refusePost":
+        if (await update.effective_chat.get_member(update.effective_user.id)).ADMINISTRATOR:
+
+            message = f"<b>Operazione annullata.</b>"
+            await query.edit_message_reply_markup()
+            await query.edit_message_text(message, parse_mode='HTML')
+        else:
+            await query.answer(text="❌ Errore : Solo gli amministratori possono fare questo comando.")
+        return
+
+
+# =======================
+# BROADCAST SYSTEM - werfrag
+# =======================
+async def onBroadcastUser(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.id == ADMIN_GROUP_ID:
+        if (await update.effective_chat.get_member(update.effective_user.id)).ADMINISTRATOR:
+            if len(context.args) > 1:
+                messageRaw = update.message.text_html.split(" ", 1)[1]
+                messageRaw = f"<b>📣 BROADCAST INTERNO</b>\n\n{messageRaw}"
+
+                messR = await update.message.reply_text(text=messageRaw, parse_mode='HTML')
+                message = (f"<b>📣 ANTEPRIMA BROADCAST INTERNO</b>\n"
+                           f"<i>È stata mandata l'anteprima dell'annuncio richiesto.</i>\n"
+                           f"<b>MessageID »</b> <i>{messR.message_id}</i>")
+                buttons = InlineKeyboardMarkup([[InlineKeyboardButton(text="✅ Approva",
+                                                                      callback_data=f"sendPost:{messR.message_id}",
+                                                                      style="success"),
+                                                 InlineKeyboardButton(text="❌ Rifiuta", callback_data="refusePost",
+                                                                      style="danger")]])
+                await messR.reply_text(text=message, parse_mode='HTML', reply_to_message_id=messR.message_id,
+                                       reply_markup=buttons)
+
+                try:
+                    await update.message.delete()
+                except telegram.error.TelegramError:
+                    pass
+            else:
+                await update.message.reply_text(text="<b><i>❌ Errore</i> : Inserisci un messaggio da annunciare.</b>",
+                                                parse_mode='HTML')
+        else:
+            await update.message.reply_text(
+                text="<b><i>❌ Errore</i> : Solo gli amministratori possono fare questo comando.</b>", parse_mode='HTML')
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -517,6 +635,10 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 async def post_init(app: Application) -> None:
     await init_db()
     log.info("Database inizializzato.")
+
+
+async def getChat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    print(update.effective_chat.id)
 
 
 def main() -> None:
@@ -559,6 +681,8 @@ def main() -> None:
     )
 
     app.add_handler(conv_handler)
+    app.add_handler(CommandHandler("broadcast", onBroadcastUser))
+    app.add_handler(CommandHandler("debug", getChat))
 
     # ── Callback query (pulsanti inline — funziona in qualsiasi chat) ──────────
     app.add_handler(CallbackQueryHandler(callback_handler))
@@ -566,7 +690,7 @@ def main() -> None:
     # ── Risposte degli admin nel gruppo ────────────────────────────────────────
     app.add_handler(
         MessageHandler(
-            filters.Chat(ADMIN_GROUP_ID) & ~filters.COMMAND & filters.IS_TOPIC_MESSAGE,
+            filters.Chat(ADMIN_GROUP_ID) & filters.IS_TOPIC_MESSAGE,
             admin_reply_handler,
         )
     )
