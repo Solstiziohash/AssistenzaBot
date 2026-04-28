@@ -651,7 +651,7 @@ def main() -> None:
             MessageHandler(
                 filters.ChatType.PRIVATE & ~filters.COMMAND,
                 generic_user_message_handler,
-            ),
+                ),
         ],
         states={
             START: [
@@ -659,19 +659,19 @@ def main() -> None:
                 MessageHandler(
                     filters.ChatType.PRIVATE & ~filters.COMMAND,
                     generic_user_message_handler,
-                ),
+                    ),
             ],
             ASKING_SUPPORT: [
                 MessageHandler(
                     filters.ChatType.PRIVATE & ~filters.COMMAND,
                     create_ticket_handler,
-                ),
+                    ),
             ],
             IN_SESSION: [
                 MessageHandler(
                     filters.ChatType.PRIVATE & ~filters.COMMAND,
                     in_session_message_handler,
-                ),
+                    ),
             ],
         },
         fallbacks=[CommandHandler("start", start_handler)],
@@ -692,7 +692,7 @@ def main() -> None:
         MessageHandler(
             filters.Chat(ADMIN_GROUP_ID) & filters.IS_TOPIC_MESSAGE,
             admin_reply_handler,
-        )
+            )
     )
 
     # ── Messaggi modificati (sincronizzazione bidirezionale) ───────────────────
