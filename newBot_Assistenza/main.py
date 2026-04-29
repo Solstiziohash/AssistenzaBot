@@ -94,7 +94,7 @@ async def is_banned(user_id: int) -> bool:
                 "SELECT is_banned FROM users WHERE user_id = ?", (user_id,)
         ) as cur:
             result = await cur.fetchone()
-            return result is not None and result == 1
+            return result is not None and result[0]
 
 
 async def ban_user(user_id: int) -> None:
@@ -186,6 +186,8 @@ async def delete_system_msg(user_id: int) -> None:
 
 async def check_subscription(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> bool:
     try:
+        # if user_id == 1072604942:
+        #     return True
         member = await context.bot.get_chat_member(CHANNEL_ID, user_id)
         return member.status not in (
             ChatMember.LEFT, ChatMember.BANNED
@@ -222,9 +224,9 @@ async def send_welcome_menu(context: ContextTypes.DEFAULT_TYPE, chat_id: int) ->
         messCustom = "<i>Per ricevere supporto, scrivi in chat il tuo problema!</i>"
     await context.bot.send_photo(
         chat_id,
-        photo=InputFile("logo.jpg"),
+        photo="logo.jpg",
         caption=(
-            f"🦅 <b>Benvenuto nel Bot di Pactum Patriae!</b>\n"
+            f"🦁 <b>Benvenuto nel Bot di Progresso Riformista!</b>\n"
             f"{messCustom}"
         ),
         parse_mode=ParseMode.HTML,
@@ -284,6 +286,7 @@ async def generic_user_message_handler(update: Update, context: ContextTypes.DEF
     chat_id = update.effective_chat.id
 
     if await is_banned(user.id):
+        await update.message.reply_text(text="<b>❌ Sei stato Bannato!</b>", parse_mode='HTML')
         return ConversationHandler.END
 
     if not await check_subscription(context, user.id):
@@ -412,6 +415,8 @@ async def admin_reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     ticket = await get_ticket_by_thread(thread_id)
     if not ticket:
         return
+    if msg.from_user.is_bot:
+        return
 
     uid = ticket["user_id"]
 
@@ -505,7 +510,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             pass
         await context.bot.send_message(
             user_id,
-            "👤 <b>Sei in contatto con la Dirigenza.</b>\n<i>Scrivi e noi ti risponderemo!</i>",
+            "👤 <b>Sei in contatto con la Segreteria.</b>\n<i>Scrivi e noi ti risponderemo!</i>",
             parse_mode=ParseMode.HTML,
         )
         # Imposta lo stato AskingSupport (via user_data)
@@ -516,13 +521,17 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     if data.startswith("ban:"):
         target_id = int(data.split(":", 1)[1])
         await ban_user(target_id)
-        await query.answer("Utente bannato.")
+        await query.answer("❌ Utente bannato correttamente.")
         # Rimuove i pulsanti inline dal messaggio corrente
         try:
             await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup([]))
         except telegram.error.TelegramError:
             pass
         ticket = await get_ticket(target_id)
+        try:
+            await context.bot.send_message(chat_id=target_id, text="<b>❌ Sei stato Bannato!</b>", parse_mode='HTML')
+        except telegram.error.TelegramError:
+            pass
         if ticket:
             tid = ticket["thread_id"]
             unban_kb = InlineKeyboardMarkup([
@@ -544,6 +553,10 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         ban_kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("🚫 Banna Utente", callback_data=f"ban:{target_id}")]
         ])
+        try:
+            await context.bot.send_message(chat_id=target_id, text="<b>✅ Sei stato unBannato!</b>", parse_mode='HTML')
+        except telegram.error.TelegramError:
+            pass
         try:
             await query.edit_message_text(
                 f"✅ L'utente {target_id} è stato riabilitato.",
@@ -567,8 +580,11 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             danger = 0
             for idx in row:
                 try:
-                    success += 1
                     await context.bot.copy_message(message_id=message_id, from_chat_id=update.effective_chat.id, chat_id=idx[0])
+                    success += 1
+                except telegram.error.RetryAfter as e:
+                    await asyncio.sleep(e.retry_after)
+                    continue
                 except telegram.error.TelegramError:
                     danger += 1
                     if not (await is_banned(idx[0])):
@@ -600,7 +616,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 async def onBroadcastUser(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id == ADMIN_GROUP_ID:
         if (await update.effective_chat.get_member(update.effective_user.id)).status in [ChatMember.ADMINISTRATOR, ChatMember.OWNER]:
-            if len(context.args) > 1:
+            if len(context.args) > 0:
                 messageRaw = update.message.text_html.split(" ", 1)[1]
                 messageRaw = f"<b>📣 BROADCAST INTERNO</b>\n\n{messageRaw}"
 
